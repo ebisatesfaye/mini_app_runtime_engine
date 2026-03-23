@@ -1,5 +1,5 @@
 name: miniapp_runtime_engine
-description: "A new Flutter package project."
+description: "A secure, WebView-based runtime engine and native device bridge for running Javascript Mini-Apps inside a Flutter Host application. Developed by Dexel Tech."
 version: 0.0.1
 homepage: https://github.com/ebisatesfaye/mini_app_runtime_engine
 repository: https://github.com/ebisatesfaye/mini_app_runtime_engine
