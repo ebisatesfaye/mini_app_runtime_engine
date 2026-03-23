@@ -1,8 +1,8 @@
 name: miniapp_runtime_engine
 description: "A new Flutter package project."
 version: 0.0.1
-homepage: https://github.com/dexeltech/miniapp_runtime_engine
-repository: https://github.com/dexeltech/miniapp_runtime_engine
+homepage: https://github.com/ebisatesfaye/mini_app_runtime_engine
+repository: https://github.com/ebisatesfaye/mini_app_runtime_engine
 environment:
   sdk: ^3.11.1
   flutter: ">=1.17.0"
