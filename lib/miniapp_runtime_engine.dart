@@ -1,10 +1,16 @@
 library;
 
-// import 'dart:convert';
+
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class MiniAppContainer extends StatefulWidget {
   final String initialFile;
@@ -22,6 +28,7 @@ class MiniAppContainer extends StatefulWidget {
 
 class _MiniAppContainerState extends State<MiniAppContainer> {
   InAppWebViewController? controller;
+  String currentAppId = "default_miniapp";
 
   @override
   Widget build(BuildContext context) {
@@ -59,9 +66,12 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
 
       switch (method) {
         case "core.init":
+          if (params != null && params["appId"] != null) {
+            currentAppId = params["appId"];
+          }
           result = {
             "instanceId": DateTime.now().millisecondsSinceEpoch.toString(),
-            "capabilities": ["camera", "storage", "auth", "ui", "device", "payments"],
+            "capabilities": ["camera", "storage", "auth", "ui", "device", "location", "file_picker", "scanner", "payments"],
           };
           break;
 
@@ -80,14 +90,29 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
           break;
 
         case "storage.setItem":
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('${currentAppId}_${params["key"]}', params["value"]);
           result = true;
           break;
 
         case "storage.getItem":
-          result = '{"item":"Pizza","price":20}';
+          final prefs = await SharedPreferences.getInstance();
+          result = prefs.getString('${currentAppId}_${params["key"]}');
+          if (result == null) throw Exception("Item not found");
           break;
           
         case "storage.removeItem":
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('${currentAppId}_${params["key"]}');
+          result = true;
+          break;
+          
+        case "storage.clear":
+          final prefs = await SharedPreferences.getInstance();
+          final keys = prefs.getKeys().where((k) => k.startsWith('${currentAppId}_'));
+          for (var k in keys) {
+            await prefs.remove(k);
+          }
           result = true;
           break;
 
@@ -107,29 +132,29 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
 
         case "device.camera.open":
         case "device.camera.capture":
-          result = await _mockCamera(context);
+          result = await _realCamera(context);
           break;
 
         case "device.location.getCurrentPosition":
-          result = await _mockLocation(context);
+          result = await _realLocation(context);
           break;
 
         case "device.location.watchPosition":
-          _showToast("Started GPS Tracking", context);
+          _showToast("Started GPS Tracking (Simulated)", context);
           result = {"watchId": "watch_${Random().nextInt(1000)}"};
           break;
 
         case "device.location.clearWatch":
-          _showToast("Stopped GPS Tracking", context);
+          _showToast("Stopped GPS Tracking (Simulated)", context);
           result = true;
           break;
 
         case "device.scanner.scan":
-          result = await _mockScanner(context);
+          result = await _realScanner(context);
           break;
 
         case "device.file.pick":
-          result = await _mockFilePicker(context);
+          result = await _realFilePicker(context);
           break;
           
         case "device.clipboard.read":
@@ -172,10 +197,64 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
 
     if (requestedPerms is List) {
       for (var p in requestedPerms) {
-        granted[p.toString()] = "granted";
+        Permission? flutterPerm;
+        final scope = p.toString();
+        
+        if (scope.contains("camera")) flutterPerm = Permission.camera;
+        if (scope.contains("location")) flutterPerm = Permission.location;
+        if (scope.contains("file") || scope.contains("storage")) flutterPerm = Permission.storage;
+        if (scope.contains("bluetooth")) flutterPerm = Permission.bluetooth;
+        if (scope.contains("microphone") || scope.contains("audio")) flutterPerm = Permission.microphone;
+        if (scope.contains("contacts")) flutterPerm = Permission.contacts;
+        if (scope.contains("calendar")) flutterPerm = Permission.calendar;
+        if (scope.contains("sensors")) flutterPerm = Permission.sensors;
+
+        if (flutterPerm != null) {
+          final status = await flutterPerm.request();
+          granted[scope] = status.isGranted ? "granted" : "denied";
+        } else {
+          bool allow = await _askUserPermission(scope, context);
+          granted[scope] = allow ? "granted" : "denied";
+        }
       }
     }
     return granted;
+  }
+
+  Future<bool> _askUserPermission(String scope, BuildContext context) async {
+    if (!context.mounted) return false;
+    
+    String readableScope = scope;
+    if (scope == "auth.token") readableScope = "Login Token";
+    if (scope == "auth.profile") readableScope = "User Profile";
+    if (scope == "payments.request") readableScope = "Make Payments";
+
+    bool? confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Permission Request", style: TextStyle(color: Colors.white)),
+        content: Text("The Mini-App is requesting permission to access your $readableScope. Do you want to allow this?", style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Deny", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3B82F6),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Allow"),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   void _showToast(String message, BuildContext context) {
@@ -222,94 +301,48 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
     return {"confirmed": confirmed ?? false};
   }
 
-  Future<Map<String, dynamic>> _mockCamera(BuildContext context) async {
-    await showDialog(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (ctx) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.camera_alt, size: 80, color: Colors.white),
-            const SizedBox(height: 16),
-            const Material(
-              color: Colors.transparent,
-              child: Text("Opening Camera...", style: TextStyle(color: Colors.white, fontSize: 18)),
-            ),
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(color: Colors.white),
-          ],
-        ),
-      ),
+  Future<Map<String, dynamic>> _realCamera(BuildContext context) async {
+    final ImagePicker picker = ImagePicker();
+    final XFile? photo = await picker.pickImage(source: ImageSource.camera);
+    if (photo != null) {
+      return {"url": photo.path, "name": photo.name};
+    }
+    throw Exception("Camera cancelled");
+  }
+
+  Future<Map<String, dynamic>> _realScanner(BuildContext context) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const ScannerScreen()),
     );
-    await Future.delayed(const Duration(seconds: 1));
-    if (context.mounted) Navigator.pop(context);
+    if (result != null) {
+      return result as Map<String, dynamic>;
+    }
+    throw Exception("Scanner cancelled");
+  }
+
+  Future<Map<String, dynamic>> _realFilePicker(BuildContext context) async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles();
+    if (result != null && result.files.isNotEmpty) {
+      final file = result.files.first;
+      return {"name": file.name, "size": file.size, "type": file.extension != null ? "application/${file.extension}" : "unknown", "path": file.path};
+    }
+    throw Exception("File picker cancelled");
+  }
+
+  Future<Map<String, dynamic>> _realLocation(BuildContext context) async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) throw Exception("Location services are disabled.");
     
-    return {"url": "https://dummyimage.com/600x400/4a90e2/ffffff&text=Mock+Camera+Photo"};
-  }
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) throw Exception("Location permissions are denied.");
+    }
+    if (permission == LocationPermission.deniedForever) throw Exception("Location permissions are permanently denied.");
 
-  Future<Map<String, dynamic>> _mockScanner(BuildContext context) async {
-    await showDialog(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (ctx) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.qr_code_scanner, size: 80, color: Colors.greenAccent),
-            const SizedBox(height: 16),
-            const Material(
-              color: Colors.transparent,
-              child: Text("Scanning QR Code...", style: TextStyle(color: Colors.white, fontSize: 18)),
-            ),
-            const SizedBox(height: 24),
-            const CircularProgressIndicator(color: Colors.greenAccent),
-          ],
-        ),
-      ),
-    );
-    await Future.delayed(const Duration(milliseconds: 1200));
-    if (context.mounted) Navigator.pop(context);
-    
-    return {"text": "mock_scanned_data_xyz987", "format": "QR_CODE"};
-  }
-
-  Future<Map<String, dynamic>> _mockFilePicker(BuildContext context) async {
-    await showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF1E293B),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Select a file", style: TextStyle(fontSize: 18, color: Colors.white)),
-            const SizedBox(height: 16),
-            ListTile(
-              leading: const Icon(Icons.picture_as_pdf, color: Colors.redAccent),
-              title: const Text("document.pdf", style: TextStyle(color: Colors.white)),
-              onTap: () => Navigator.pop(ctx),
-            ),
-            ListTile(
-              leading: const Icon(Icons.image, color: Colors.blueAccent),
-              title: const Text("photo.jpg", style: TextStyle(color: Colors.white)),
-              onTap: () => Navigator.pop(ctx),
-            )
-          ],
-        ),
-      ),
-    );
-    return {"name": "document.pdf", "size": 102400, "type": "application/pdf"};
-  }
-
-  Future<Map<String, dynamic>> _mockLocation(BuildContext context) async {
-    _showToast("Fetching exact GPS coordinates...", context);
-    await Future.delayed(const Duration(seconds: 1));
-    return {"lat": 9.03, "lng": 38.74, "accuracy": 15.0};
+    Position position = await Geolocator.getCurrentPosition();
+    return {"lat": position.latitude, "lng": position.longitude, "accuracy": position.accuracy};
   }
 
   Future<Map<String, dynamic>> _requestPayment(dynamic params, BuildContext context) async {
@@ -344,5 +377,38 @@ class _MiniAppContainerState extends State<MiniAppContainer> {
     if (context.mounted) Navigator.pop(context);
 
     return {"status": "success", "transactionId": "txn_${Random().nextInt(999999)}"};
+  }
+}
+
+class ScannerScreen extends StatefulWidget {
+  const ScannerScreen({super.key});
+  @override
+  State<ScannerScreen> createState() => _ScannerScreenState();
+}
+
+class _ScannerScreenState extends State<ScannerScreen> {
+  final MobileScannerController controller = MobileScannerController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan QR/Barcode')),
+      body: MobileScanner(
+        controller: controller,
+        onDetect: (capture) {
+          final List<Barcode> barcodes = capture.barcodes;
+          if (barcodes.isNotEmpty) {
+            final barcode = barcodes.first;
+            Navigator.pop(context, {"text": barcode.rawValue ?? "", "format": barcode.format.name});
+          }
+        },
+      ),
+    );
+  }
+  
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
   }
 }
